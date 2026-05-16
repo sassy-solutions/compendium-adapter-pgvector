@@ -1,10 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <AssemblyName>Compendium.Adapters.Sample</AssemblyName>
-    <RootNamespace>Compendium.Adapters.Sample</RootNamespace>
-    <Description>Compendium adapter for Sample (placeholder — replace with real vendor description).</Description>
-    <PackageTags>compendium;adapter;sample</PackageTags>
+    <AssemblyName>Compendium.Adapters.Pgvector</AssemblyName>
+    <RootNamespace>Compendium.Adapters.Pgvector</RootNamespace>
+    <Description>Compendium adapter for Pgvector (placeholder — replace with real vendor description).</Description>
+    <PackageTags>compendium;adapter;pgvector</PackageTags>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
