@@ -1,118 +1,130 @@
-# `template-compendium-adapter-dotnet`
+# `compendium-adapter-pgvector`
 
-Starter for a new **Compendium** adapter (.NET 9, single-vendor, lives in its own repository).
+pgvector adapter for the [Compendium](https://github.com/sassy-solutions/compendium) framework. Implements `IVectorStore` from `Compendium.Abstractions.VectorStore` over PostgreSQL + the [pgvector](https://github.com/pgvector/pgvector) extension via raw [Npgsql](https://github.com/npgsql/npgsql).
 
-Aligns with [ADR 0006](../../docs/adr/0006-multi-repo-adapter-split.md) (split heavy adapters into per-adapter repositories). Encodes the [`compendium-test-author`](.claude/skills/compendium-test-author/SKILL.md) skill so `/tests` and `/coverage` work out of the box.
+Extracted from `sassy-solutions/compendium` per [ADR-0006](https://github.com/sassy-solutions/compendium/blob/main/docs/adr/0006-multi-repo-adapter-split.md) (multi-repo adapter split). Built from [`template-compendium-adapter-dotnet`](https://github.com/sassy-solutions/template-compendium-adapter-dotnet).
 
-## What you get
+## What's in this package
 
-```
-.
-├── src/Compendium.Adapters.Pgvector/        — the adapter project (rename Pgvector → <Vendor>)
-│   ├── DependencyInjection/
-│   │   └── ServiceCollectionExtensions.cs
-│   ├── Options/PgvectorOptions.cs
-│   └── PgvectorAdapter.cs                   — illustrates the IAdapter (or any port) shape
-├── tests/Unit/Compendium.Adapters.Pgvector.Tests/
-│   ├── DependencyInjection/ServiceCollectionExtensionsTests.cs
-│   ├── Options/PgvectorOptionsTests.cs
-│   └── GlobalUsings.cs
-├── .github/workflows/ci.yml               — build + test + 90% coverage gate
-├── .claude/skills/compendium-test-author/SKILL.md
-├── .claude/commands/{tests,coverage}.md
-├── .config/dotnet-tools.json              — pins ReportGenerator
-├── Directory.Build.props
-├── Directory.Packages.props               — central package management
-├── Compendium.Adapters.Pgvector.sln
-├── global.json                            — pins .NET 9 SDK
-└── LICENSE
+| Component | Implements | Purpose |
+|---|---|---|
+| `PgvectorVectorStore` | `IVectorStore` | Embedding storage + ANN similarity search, JSONB metadata, tenant isolation |
+| `PgvectorOptions` | — | Connection / schema / index-tuning configuration |
+| `TenantIdentifier` | — | Validates tenant ids against a strict alphanumeric+dash+underscore regex before any SQL bind |
+| `ServiceCollectionExtensions` | — | DI helpers (`AddCompendiumPgvector(...)`) |
+
+## Install
+
+```bash
+dotnet add package Compendium.Adapters.Pgvector
 ```
 
-## Conventions enforced (copy from Compendium framework)
+## Quick start
+
+```csharp
+using Compendium.Abstractions.VectorStore;
+using Compendium.Abstractions.VectorStore.Models;
+using Compendium.Adapters.Pgvector.DependencyInjection;
+
+services.AddCompendiumPgvector(o =>
+{
+    o.ConnectionString = "Host=localhost;Database=app;Username=u;Password=p";
+    o.Schema = "public";
+});
+
+// IVectorStore is now resolvable from DI.
+var store = services.BuildServiceProvider().GetRequiredService<IVectorStore>();
+await store.EnsureCollectionAsync("documents", dimension: 1536, DistanceMetric.Cosine);
+await store.UpsertAsync("documents", new[]
+{
+    new VectorRecord("doc-1", embedding, metadata, tenantId: "tenant-1"),
+});
+
+var matches = await store.SearchAsync(
+    "documents",
+    queryEmbedding,
+    topK: 5,
+    VectorFilter.Eq("category", "support").ForTenant("tenant-1"));
+```
+
+A runnable example lives under [`samples/01-rag-roundtrip`](samples/01-rag-roundtrip/Program.cs).
+
+## Configuration options
+
+Bind to the `Compendium:Adapters:Pgvector` section, or pass an inline callback.
+
+| Option | Default | Purpose |
+|---|---|---|
+| `ConnectionString` | _(required)_ | Npgsql connection string. |
+| `Schema` | `public` | Schema in which collection tables are created. Must be a valid PostgreSQL identifier. |
+| `TablePrefix` | `vec_` | Prefix applied to every collection-derived table name. |
+| `DefaultIndex` | `Hnsw` | `Hnsw` (best query latency) or `IvfFlat` (cheaper build). |
+| `HnswM` | `16` | HNSW graph degree. |
+| `HnswEfConstruction` | `64` | HNSW build-time candidate-list size. |
+| `IvfFlatLists` | `100` | IVFFlat `lists` parameter (roughly `sqrt(rows)` per pgvector docs). |
+| `BatchUpsertThreshold` | `256` | Reserved for the future COPY-based fast path. |
+| `CommandTimeoutSeconds` | `60` | Npgsql command timeout applied to every operation. |
+| `MaxPoolSize` | `100` | Npgsql connection-pool ceiling. |
+
+## Tenancy
+
+Every record can carry an optional `TenantId`. The adapter enforces tenant isolation on every read/write:
+
+- **Upsert**: the tenant id is stored on the row; invalid ids (anything outside `[a-zA-Z0-9_-]{1,255}`) are rejected before binding to SQL.
+- **Search**: when no `VectorFilter.ForTenant(...)` scope is supplied, queries are restricted to rows with `tenant_id IS NULL`. With a tenant filter, queries restrict to that tenant only. Cross-tenant reads are impossible without explicitly passing a tenant id.
+- **Delete**: scoped to either `tenant_id IS NULL` or `tenant_id = @tenant_id`. There is no "delete all tenants" overload.
+
+The `TenantIdentifier.IsValid` helper mirrors `compendium-adapter-postgresql/RowLevelSecurityExtensions` to keep the security posture consistent across adapters.
+
+## Distance metrics
+
+The pgvector operator and index opclass are selected per collection at `EnsureCollectionAsync` time and persisted in the per-schema `compendium_pgvector_collections` table.
+
+| `DistanceMetric` | Operator | Opclass |
+|---|---|---|
+| `L2` | `<->` | `vector_l2_ops` |
+| `Cosine` | `<=>` | `vector_cosine_ops` |
+| `InnerProduct` | `<#>` | `vector_ip_ops` |
+
+## Production checklist
+
+- **TLS** — pass `SslMode=VerifyFull` (or `Require` at minimum) in the connection string for any non-loopback deployment.
+- **Connection pooling** — keep `MaxPoolSize` aligned with PostgreSQL's `max_connections`. Use `MinPoolSize` if you need pre-warmed connections in latency-sensitive workloads.
+- **Dimensions per model** — pick the dimension once: changing it requires recreating the collection. Common values: 384 (e5-small, bge-small), 768 (e5-base, sentence-transformers), 1024 (Cohere embed v3), 1536 (OpenAI text-embedding-3-small), 3072 (OpenAI text-embedding-3-large).
+- **Index choice (HNSW vs IVFFlat)** —
+  - HNSW (default): faster queries, slower index build, higher memory footprint. Best for read-heavy RAG workloads with up to ~10M vectors.
+  - IVFFlat: cheaper build, lower memory, sensitive to `lists` parameter. Recommended for very large collections (>10M) where build time matters and you can recall-tune.
+- **`maintenance_work_mem`** — pgvector's HNSW build is memory-bound. Bump to ≥ 1 GB on PG sessions that create the index.
+- **Backups** — pgvector data lives in regular PostgreSQL tables; standard `pg_dump`/streaming replication works without special handling.
+- **Multi-tenancy** — prefer the `tenant_id` column model (default). For very large workloads with strict isolation requirements, deploy per-tenant schemas and route via separate `PgvectorOptions` instances.
+
+## Versioning
+
+This package continues the version sequence of `Compendium.Adapters.Pgvector` originally published from the framework monorepo. Versions are driven by git tags via [MinVer](https://github.com/adamralph/minver) — see [`docs/RELEASE.md`](docs/RELEASE.md). The first tag from this repo will be set when release infrastructure (and the rotated `NUGET_API_KEY`) is in place.
+
+## Repository conventions
 
 | Aspect | Choice |
 |---|---|
-| Test framework | xUnit 2.9.3 |
-| Assertions | FluentAssertions 6.12.1 — never `Assert.*` |
-| Mocks | NSubstitute 5.1.0 — never Moq |
-| Coverage | coverlet.collector 6.0.2 + ReportGenerator (local tool) |
-| Result pattern | `Result<T>` from `Compendium.Abstractions` (NuGet) |
-| Async | `async Task` + cancellation tokens — never `Thread.Sleep`, never `.Result` |
-| Test naming | `{SUT}Tests` / `{Method}_{Scenario}_{Expected}` |
-| Test layout | AAA explicit (`// Arrange / // Act / // Assert`) |
-| File header | Sassy Solutions copyright block |
-| HTTP mocking (when applicable) | `RichardSzalay.MockHttp` 7.0.0 |
-| Container fixtures (integration) | `Testcontainers` 4.11.0 + `IAsyncLifetime` + `[RequiresDockerFact]` |
-| CI gate | ≥ 90 % line coverage on the unit-testable surface (DB-bound types may be exempted with documented reason) |
+| Target | .NET 9, C# 13 |
+| DB driver | [Npgsql 9.0.x](https://www.nuget.org/packages/Npgsql) + [Pgvector 0.3.x](https://www.nuget.org/packages/Pgvector) |
+| Test framework | xUnit 2.9.3 + FluentAssertions 6.12.1 + NSubstitute 5.1.0 |
+| Integration tests | [Testcontainers](https://dotnet.testcontainers.org) 4.11.0 with `pgvector/pgvector:pg17` |
+| Coverage gate | 60 % line coverage on the unit-testable surface; integration suite covers DB-bound paths |
+| Result pattern | `Result<T>` from `Compendium.Core` |
 
-## How to scaffold a new adapter
+## Build & test locally
 
 ```bash
-# 1. Pick a vendor name (use PascalCase: Stripe, PostgreSQL, Redis…)
-export VENDOR=Stripe
+# Unit tests — no Docker required.
+dotnet test --filter "FullyQualifiedName!~IntegrationTests"
 
-# 2. Copy the template to a new directory next to your Compendium clone
-cp -r templates/adapter-dotnet ../compendium-adapter-${VENDOR,,}
-cd ../compendium-adapter-${VENDOR,,}
-
-# 3. Find-and-replace placeholders (BSD sed on macOS — adapt for GNU sed)
-find . -type f \( -name '*.cs' -o -name '*.csproj' -o -name '*.sln' -o -name '*.md' -o -name '*.yml' -o -name '*.json' -o -name '*.props' \) -exec sed -i '' -e "s/Pgvector/${VENDOR}/g" -e "s/pgvector/${VENDOR,,}/g" {} +
-
-# 4. Rename folders/files
-git mv src/Compendium.Adapters.Pgvector              src/Compendium.Adapters.${VENDOR}
-git mv src/Compendium.Adapters.${VENDOR}/Compendium.Adapters.Pgvector.csproj \
-       src/Compendium.Adapters.${VENDOR}/Compendium.Adapters.${VENDOR}.csproj
-git mv src/Compendium.Adapters.${VENDOR}/PgvectorAdapter.cs                   \
-       src/Compendium.Adapters.${VENDOR}/${VENDOR}Adapter.cs
-git mv src/Compendium.Adapters.${VENDOR}/Options/PgvectorOptions.cs           \
-       src/Compendium.Adapters.${VENDOR}/Options/${VENDOR}Options.cs
-
-git mv tests/Unit/Compendium.Adapters.Pgvector.Tests           tests/Unit/Compendium.Adapters.${VENDOR}.Tests
-git mv tests/Unit/Compendium.Adapters.${VENDOR}.Tests/Compendium.Adapters.Pgvector.Tests.csproj \
-       tests/Unit/Compendium.Adapters.${VENDOR}.Tests/Compendium.Adapters.${VENDOR}.Tests.csproj
-git mv tests/Unit/Compendium.Adapters.${VENDOR}.Tests/Options/PgvectorOptionsTests.cs \
-       tests/Unit/Compendium.Adapters.${VENDOR}.Tests/Options/${VENDOR}OptionsTests.cs
-
-mv Compendium.Adapters.Pgvector.sln Compendium.Adapters.${VENDOR}.sln
-
-# 5. Initialise git and verify build
-git init
-git add .
-dotnet build -c Release
-dotnet test  -c Release
+# Integration tests — Docker must be running (TestContainers pulls pgvector/pgvector:pg17).
+dotnet test --filter "FullyQualifiedName~IntegrationTests"
 ```
 
-## What you still need to do per repo
-
-After scaffolding :
-
-- **Author the actual adapter code.** Replace `PgvectorAdapter` with the real implementation of whatever port (`IEventStore`, `IIdentityProvider`, `IBillingProvider`, `IEmailSender`, …) you're filling.
-- **NuGet publishing.** Add `NUGET_API_KEY` to repo secrets ; the included `release.yml` (TODO — add when first needed) packs and pushes on `v*` tags.
-- **Branch protection.** Require `build-test` (CI), at least one review, no force-push to `main`.
-- **Renovate or Dependabot.** Renovate config at `renovate.json` — track Compendium NuGets so a framework release auto-PRs the adapter. Dependabot for npm-style scheduled dep bumps.
-- **Integration tests** (optional but recommended for adapters with external systems). Add `tests/Integration/Compendium.Adapters.<Vendor>.IntegrationTests/` with `Testcontainers` if needed. Keep them out of the unit CI job.
-
-## Local-dev mode (when you're modifying both framework and adapter)
-
-Edit `Directory.Packages.props` to add a project reference instead of the NuGet :
-
-```xml
-<ItemGroup Condition="'$(LinkLocalCompendium)' == 'true'">
-  <PackageReference Remove="Compendium.Abstractions" />
-  <ProjectReference Include="../compendium/src/Abstractions/Compendium.Abstractions/Compendium.Abstractions.csproj" />
-</ItemGroup>
-```
-
-Then `dotnet build -p:LinkLocalCompendium=true`.
-
-## Common pitfalls (read before pushing)
-
-- **Broken `Compendium.sln`** : every `Project("{...}")` MUST have a matching `EndProject` on the next non-empty line, and every GUID listed in `Project(...)` MUST appear in the `GlobalSection(ProjectConfigurationPlatforms)` (4 `.Debug|Any CPU.*` + `.Release|Any CPU.*` lines). Linux CI is strict ; macOS is lenient and will mask this bug. **Always** use `dotnet sln add` / `dotnet sln remove` instead of hand-editing the sln. Verify with `dotnet sln list && dotnet build -c Release` before pushing.
-- **`gh pr merge` from a detached worktree** : fails opaquely with "could not determine current branch". Always run merges from a checkout that's on a named branch (typically `main`).
-- **MinVer tag prefix** : pinned to `v` in `Directory.Build.props`. The first tag must continue the version sequence of the package's previous releases (e.g. if `Compendium.Adapters.Stripe` was last published as `1.0.0-preview.8` from the framework, the first tag here is `v1.0.0-preview.9`).
-- **No `--no-verify`, no `--force-push`** (use `--force-with-lease` instead). No version bumps in `Directory.Packages.props` outside of Renovate-managed PRs.
-- **Skill / commands** : `.claude/skills/compendium-test-author/SKILL.md` and `.claude/commands/{tests,coverage}.md` ship pre-baked. `/tests` and `/coverage` work out of the box in Claude Code.
+The integration suite covers behaviour that can only be observed against a live pgvector backend: extension bootstrap, collection table + ANN index creation, JSONB round-trip, vector-distance ordering, tenant isolation, idempotent delete.
 
 ## License
 
-MIT — same as Compendium itself.
+[MIT](LICENSE) — Copyright © 2026 Sassy Solutions.

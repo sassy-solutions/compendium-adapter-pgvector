@@ -5,6 +5,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using Compendium.Abstractions.VectorStore;
 using Compendium.Adapters.Pgvector.Options;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,17 +13,17 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Compendium.Adapters.Pgvector.DependencyInjection;
 
 /// <summary>
-/// DI registration helpers for the Pgvector adapter.
+/// DI registration helpers for the pgvector adapter.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers <see cref="PgvectorAdapter"/> and its options.
+    /// Registers <see cref="PgvectorVectorStore"/> as <see cref="IVectorStore"/> bound to <see cref="PgvectorOptions.SectionName"/>.
     /// </summary>
     /// <param name="services">DI container.</param>
     /// <param name="configuration">Source configuration; section <see cref="PgvectorOptions.SectionName"/> is bound.</param>
     /// <returns>The same <paramref name="services"/> for chaining.</returns>
-    public static IServiceCollection AddCompendiumPgvectorAdapter(
+    public static IServiceCollection AddCompendiumPgvector(
         this IServiceCollection services,
         IConfiguration configuration)
     {
@@ -34,18 +35,19 @@ public static class ServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        services.AddSingleton<PgvectorAdapter>();
+        services.AddSingleton<PgvectorVectorStore>();
+        services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<PgvectorVectorStore>());
 
         return services;
     }
 
     /// <summary>
-    /// Registers <see cref="PgvectorAdapter"/> with an inline configuration callback.
+    /// Registers <see cref="PgvectorVectorStore"/> as <see cref="IVectorStore"/> with an inline configuration callback.
     /// </summary>
     /// <param name="services">DI container.</param>
     /// <param name="configure">Callback to mutate <see cref="PgvectorOptions"/>.</param>
     /// <returns>The same <paramref name="services"/> for chaining.</returns>
-    public static IServiceCollection AddCompendiumPgvectorAdapter(
+    public static IServiceCollection AddCompendiumPgvector(
         this IServiceCollection services,
         Action<PgvectorOptions> configure)
     {
@@ -57,7 +59,8 @@ public static class ServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        services.AddSingleton<PgvectorAdapter>();
+        services.AddSingleton<PgvectorVectorStore>();
+        services.AddSingleton<IVectorStore>(sp => sp.GetRequiredService<PgvectorVectorStore>());
 
         return services;
     }
