@@ -3,19 +3,29 @@
   <PropertyGroup>
     <AssemblyName>Compendium.Adapters.Pgvector</AssemblyName>
     <RootNamespace>Compendium.Adapters.Pgvector</RootNamespace>
-    <Description>Compendium adapter for Pgvector (placeholder — replace with real vendor description).</Description>
-    <PackageTags>compendium;adapter;pgvector</PackageTags>
+    <PackageId>Compendium.Adapters.Pgvector</PackageId>
+    <Description>pgvector adapter for the Compendium framework: implements IVectorStore over PostgreSQL with the pgvector extension. Per-collection tables with HNSW/IVFFlat indexes, tenant-isolated upsert/search/delete, JSONB metadata, and Result-pattern error handling.</Description>
+    <PackageTags>compendium;adapter;pgvector;vector-store;rag;embeddings;npgsql;postgresql</PackageTags>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Compendium.Core" />
     <PackageReference Include="Compendium.Abstractions" />
+    <PackageReference Include="Compendium.Abstractions.VectorStore" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Options" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
     <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Pgvector" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Compendium.Adapters.Pgvector.Tests" />
+    <InternalsVisibleTo Include="Compendium.Adapters.Pgvector.IntegrationTests" />
   </ItemGroup>
 
 </Project>
